@@ -152,8 +152,8 @@ python scripts/download_all.py --refresh --season 2026
 - `outputs/weekXX_graded.csv` — post-week grading, created by
   `python -m nflscore.grade --week N`.
 - `outputs/backtest_2026.csv` — per-game current-season backtest predictions.
-- `outputs/backtest_2026_weeks1_8.csv` — the original Weeks 1–8 slice, kept for
-  comparability.
+- `outputs/backtest_2026_weeks1_8.csv` — the Weeks 1–8 slice of the current
+  backtest, kept for comparison with earlier write-ups.
 - `outputs/backtest_summary.csv` — pooled metrics by model.
 - `outputs/backtest_per_week.csv` — week-by-week accuracy/error.
 - `outputs/backtest_calibration.csv` — blend calibration bins.

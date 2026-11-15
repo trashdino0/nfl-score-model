@@ -2,7 +2,8 @@
 
 *Date: 2026-11-14*
 *Scope: `src/nflscore`, 2026 season, 2021–2025 validation + 2026 Weeks 1–8 backtest*
-*Status: planning document. No model code has been changed yet.*
+*Status: Tier 1 implemented (see §0). The pre-Tier-1 numbers in §1–§7 are kept
+as the audit record that motivated each change; §0 supersedes them.*
 
 ---
 

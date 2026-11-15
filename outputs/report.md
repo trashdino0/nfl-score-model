@@ -1,5 +1,11 @@
 # NFL Score Model — 2026 Backtest and Week 9 Forecast
 
+> **Pre-Tier-1 study (historical).** Written before the evaluation, fallback, and
+> joint-distribution changes. For current numbers use
+> [`evaluation.md`](evaluation.md); for the current model description use the
+> README. The 50/50 blend, fixed ±score ranges, and published O/U leans described
+> here no longer exist.
+
 *Generated 2026-11-06. All predictions are model estimates, not betting advice.*
 
 ## 1. Executive summary

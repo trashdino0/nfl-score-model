@@ -1,5 +1,10 @@
 # 2026 Week 9 — NFL predictions
 
+> **Pre-Tier-1 card (historical).** Generated before the evaluation/fallback and
+> joint-distribution changes. It shows a 50/50 market blend, fixed score ranges,
+> and an over/under lean that the current model no longer publishes. Kept as a
+> record of what was published; the Week 9 grade is in the git history only.
+
 *Generated 2026-11-06 23:02. Model trained on 2249 completed games (2018+); margin σ = 12.74. This card covers 14 unplayed games.*
 
 **Already final:** JAX 33 – BAL 10.
