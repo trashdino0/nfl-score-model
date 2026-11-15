@@ -1,0 +1,16 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["src", "scripts", "tests"],
+  "exclude": ["**/__pycache__", ".venv", "data", "outputs"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "off",
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "none",
+  "reportUndefinedVariable": "error",
+  "reportUnboundVariable": "error",
+  "reportSelfClsParameterName": "error",
+  "reportInvalidStringEscapeSequence": "error",
+  "reportAssertAlwaysTrue": "warning",
+  "reportUnusedExpression": "warning"
+}
