@@ -1,0 +1,2 @@
+game_id,away_team,home_team,pred_winner,pred_score,pred_margin,pred_total,win_prob,market_margin,market_total,ats_pick,ou_pick,home_score,away_score,margin,total,actual_winner,pick_correct,home_score_err,away_score_err,margin_err,total_err,ats_result,ou_result,source
+2026_10_WAS_NYG,WAS,NYG,NYG,20-22,2.0,42.0,0.55,2.5,41.5,WAS,Over,21.0,24.0,-3.0,45.0,WAS,0.0,1.0,4.0,5.0,3.0,win,win,screenshot sent 2026-11-12 (pre-kickoff)
