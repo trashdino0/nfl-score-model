@@ -6,6 +6,17 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import log_loss, mean_absolute_error, mean_squared_error
 
+from .evaluation import wilson_interval
+
+
+def _roi(wins: int, losses: int, odds: float = -110) -> float:
+    """Return on investment for 1-unit bets at American ``odds``."""
+    n = wins + losses
+    if not n:
+        return float("nan")
+    payout = 100 / abs(odds) if odds < 0 else odds / 100
+    return (wins * payout - losses) / n
+
 
 def _winner_mask(df: pd.DataFrame) -> pd.Series:
     if "home_win" in df.columns:
@@ -17,6 +28,17 @@ def _home_win(df: pd.DataFrame) -> pd.Series:
     if "home_win" in df.columns:
         return df["home_win"]
     return (df["margin"] > 0).astype(float)
+
+
+def _safe_corr(a, b) -> float:
+    """Correlation that returns NaN instead of warning on tiny/constant samples."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    mask = np.isfinite(a) & np.isfinite(b)
+    a, b = a[mask], b[mask]
+    if len(a) < 2 or np.std(a) == 0 or np.std(b) == 0:
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
 
 
 def evaluate(
@@ -33,7 +55,39 @@ def evaluate(
     valid = d["home_score"].notna() & d["away_score"].notna()
     d = d[valid]
     if d.empty:
-        return {"model": label, "n": 0}
+        return {
+            "model": label,
+            "n": 0,
+            **{
+                key: float("nan")
+                for key in [
+                    "win_acc",
+                    "margin_mae",
+                    "margin_rmse",
+                    "total_mae",
+                    "total_rmse",
+                    "home_score_mae",
+                    "away_score_mae",
+                    "score_mae",
+                    "margin_corr",
+                    "total_corr",
+                    "ats_rate",
+                    "ats_n",
+                    "ats_w",
+                    "ats_l",
+                    "ats_p",
+                    "ats_roi",
+                    "ou_rate",
+                    "ou_n",
+                    "ou_w",
+                    "ou_l",
+                    "ou_p",
+                    "ou_roi",
+                    "brier",
+                    "logloss",
+                ]
+            },
+        }
 
     pm = d[pred_margin].astype(float)
     pt = d[pred_total].astype(float)
@@ -52,6 +106,8 @@ def evaluate(
     # NaN rather than silently picking one side of every game.
     ats_rate = np.nan
     ats_n = 0
+    ats_w = ats_l = ats_p = 0
+    ats_roi = np.nan
     if "market_margin" in d.columns:
         has_edge = not np.allclose(
             pm.to_numpy(dtype=float),
@@ -66,13 +122,19 @@ def evaluate(
             ats_win = (
                 (pick_home & (actual_edge > 0)) | (~pick_home & (actual_edge < 0))
             ) & ~push
+            ats_p = int(push.sum())
+            ats_w = int(ats_win.sum())
             ats_n = int((~push).sum())
+            ats_l = ats_n - ats_w
             if ats_n:
-                ats_rate = float(ats_win.sum() / ats_n)
+                ats_rate = ats_w / ats_n
+                ats_roi = _roi(ats_w, ats_l)
 
     # Over/under: model total vs closing total.
     ou_rate = np.nan
     ou_n = 0
+    ou_w = ou_l = ou_p = 0
+    ou_roi = np.nan
     if "market_total" in d.columns:
         has_edge = not np.allclose(
             pt.to_numpy(dtype=float),
@@ -86,9 +148,13 @@ def evaluate(
             ou_win = (
                 (pick_over & (actual_over > 0)) | (~pick_over & (actual_over < 0))
             ) & ~push
+            ou_p = int(push.sum())
+            ou_w = int(ou_win.sum())
             ou_n = int((~push).sum())
+            ou_l = ou_n - ou_w
             if ou_n:
-                ou_rate = float(ou_win.sum() / ou_n)
+                ou_rate = ou_w / ou_n
+                ou_roi = _roi(ou_w, ou_l)
 
     brier = np.nan
     logloss = np.nan
@@ -112,12 +178,20 @@ def evaluate(
         "home_score_mae": float(mean_absolute_error(d["home_score"], ph)),
         "away_score_mae": float(mean_absolute_error(d["away_score"], pa)),
         "score_mae": float(mean_absolute_error(scores, pred_scores)),
-        "margin_corr": float(np.corrcoef(d["margin"], pm)[0, 1]),
-        "total_corr": float(np.corrcoef(d["total"], pt)[0, 1]),
+        "margin_corr": _safe_corr(d["margin"], pm),
+        "total_corr": _safe_corr(d["total"], pt),
         "ats_rate": ats_rate,
         "ats_n": ats_n,
+        "ats_w": ats_w,
+        "ats_l": ats_l,
+        "ats_p": ats_p,
+        "ats_roi": ats_roi,
         "ou_rate": ou_rate,
         "ou_n": ou_n,
+        "ou_w": ou_w,
+        "ou_l": ou_l,
+        "ou_p": ou_p,
+        "ou_roi": ou_roi,
         "brier": brier,
         "logloss": logloss,
     }
@@ -146,19 +220,35 @@ def per_week(df: pd.DataFrame, pred_margin: str = "pred_margin") -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
-def calibration(df: pd.DataFrame, prob_col: str = "win_prob", bins=5) -> pd.DataFrame:
+def calibration(
+    df: pd.DataFrame,
+    prob_col: str = "win_prob",
+    bins: int = 8,
+    label: str | None = None,
+) -> pd.DataFrame:
+    """Calibration bins with Wilson intervals on the observed win rate."""
     d = df[df["home_win"].notna()].copy()
     d = d[d[prob_col].notna()]
+    if d.empty:
+        return pd.DataFrame(columns=["bin", "n", "predicted", "actual", "lo", "hi"])
     edges = np.linspace(0, 1, bins + 1)
     d["bin"] = pd.cut(d[prob_col], edges, include_lowest=True)
-    out = (
-        d.groupby("bin", observed=True)
-        .agg(
-            n=("home_win", "size"),
-            predicted=(prob_col, "mean"),
-            actual=("home_win", "mean"),
+    rows = []
+    for label_bin, g in d.groupby("bin", observed=True):
+        wins = int(g["home_win"].sum())
+        n = len(g)
+        lo, hi = wilson_interval(wins, n)
+        rows.append(
+            {
+                "bin": str(label_bin),
+                "n": n,
+                "predicted": float(g[prob_col].mean()),
+                "actual": wins / n,
+                "lo": lo,
+                "hi": hi,
+            }
         )
-        .reset_index()
-    )
-    out["bin"] = out["bin"].astype(str)
+    out = pd.DataFrame(rows)
+    if label is not None:
+        out.insert(0, "model", label)
     return out

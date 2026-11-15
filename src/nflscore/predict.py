@@ -8,13 +8,12 @@ Run with:
 from __future__ import annotations
 
 import argparse
-from math import erf, sqrt
 
 import numpy as np
 import pandas as pd
 
 from .config import OUTPUTS, PROCESSED
-from .model import NFLModel, add_market_baseline, feature_label
+from .model import NFLModel, add_market_baseline, feature_label, prob_from_margin
 
 
 def resolve_target(
@@ -125,15 +124,18 @@ def predict_slate(season: int | None = None, week: int | None = None) -> pd.Data
     if pd.notna(target_day):
         train = train[train["gameday"] < target_day].copy()
 
-    # Keep the raw market state: _safe_market fills missing lines with the naive
-    # baseline, so the card needs its own flag to avoid calling that a market line.
-    test["market_line_missing"] = test["market_margin"].isna()
+    # Keep the raw market state: the model distinguishes a real closing line
+    # from a pure-model fallback, and the card must not call the latter a line.
+    if "market_margin" in test.columns:
+        test["market_line_missing"] = test["market_margin"].isna()
+    else:
+        test["market_line_missing"] = True
 
     model = NFLModel().fit(train)
     pred = add_market_baseline(model.predict(test))
-    pred["pure_win_prob"] = [
-        0.5 * (1 + erf((m / 13.5) / sqrt(2))) for m in pred["pure_margin"]
-    ]
+    pred["pure_win_prob"] = prob_from_margin(
+        pred["pure_margin"], model.pure_margin_sigma_
+    )
     contrib = model.margin_contributions(test) * model.config.margin_shrink
 
     names = _player_names()
@@ -160,20 +162,17 @@ def predict_slate(season: int | None = None, week: int | None = None) -> pd.Data
     )
     pred["pred_home_score_r"] = pred["pred_home_score"].round().astype(int)
     pred["pred_away_score_r"] = pred["pred_away_score"].round().astype(int)
-    pred["model_confidence"] = pred["win_prob"].map(lambda p: max(p, 1 - p))
-    pred["pick_win_prob"] = np.where(
-        pred["pred_home_win"] == 1, pred["win_prob"], 1 - pred["win_prob"]
-    )
     pred["pure_pick_win_prob"] = np.where(
         pred["pure_margin"] > 0, pred["pure_win_prob"], 1 - pred["pure_win_prob"]
     )
 
-    # Empirical 80% score intervals from the 2021-2025 walk-forward residuals.
-    # These are deliberately wide: exact NFL scores are inherently noisy.
-    pred["pred_home_score_low"] = (pred["pred_home_score"] - 12.9).round().astype(int)
-    pred["pred_home_score_high"] = (pred["pred_home_score"] + 11.0).round().astype(int)
-    pred["pred_away_score_low"] = (pred["pred_away_score"] - 11.9).round().astype(int)
-    pred["pred_away_score_high"] = (pred["pred_away_score"] + 11.3).round().astype(int)
+    # 80% score ranges come from the joint residual bootstrap fitted on
+    # out-of-fold errors, so they are conditional on this game's projection
+    # and preserve the margin/total correlation.
+    for side in ["home", "away"]:
+        for q in ["low", "med", "high"]:
+            col = f"pred_{side}_score_{q}"
+            pred[col] = pred[col].round().astype(int)
 
     keep = [
         "game_id",
@@ -189,14 +188,23 @@ def predict_slate(season: int | None = None, week: int | None = None) -> pd.Data
         "pred_home_score_r",
         "pred_away_score_r",
         "pred_home_score_low",
+        "pred_home_score_med",
         "pred_home_score_high",
         "pred_away_score_low",
+        "pred_away_score_med",
         "pred_away_score_high",
         "win_prob",
+        "win_prob_source",
         "pick_win_prob",
         "model_win_prob",
         "market_win_prob",
+        "sim_win_prob",
         "model_confidence",
+        "cover_prob",
+        "push_prob",
+        "over_prob",
+        "total_push_prob",
+        "pick_cover_prob",
         "pure_margin",
         "pure_total",
         "pure_home_score",
@@ -206,6 +214,7 @@ def predict_slate(season: int | None = None, week: int | None = None) -> pd.Data
         "pure_win_prob",
         "pure_pick_win_prob",
         "market_line_missing",
+        "line_source",
         "market_margin",
         "market_total",
         "market_home_score",
@@ -214,9 +223,8 @@ def predict_slate(season: int | None = None, week: int | None = None) -> pd.Data
         "market_pick",
         "model_edge",
         "model_vs_market",
-        "total_edge",
         "ats_pick",
-        "ou_pick",
+        "ats_play",
         "home_qb_name",
         "away_qb_name",
         "home_last_qb_name",
@@ -250,7 +258,10 @@ def main(season: int | None = None, week: int | None = None) -> None:
     pd.set_option("display.max_colwidth", 60)
     print(f"Trained on {model.train_rows_} completed games (2018+).")
     print(
-        f"Margin sigma: {model.margin_sigma_:.2f}; margin shrink: {model.config.margin_shrink:.2f}; total shrink: {model.config.total_shrink:.2f}"
+        f"Margin sigma: {model.margin_sigma_:.2f}; "
+        f"margin shrink: {model.config.margin_shrink:.2f}; "
+        f"total shrink: {model.config.total_shrink:.2f}; "
+        f"win-prob model weight: {model.win_prob_model_weight_:.2f}"
     )
     print(f"\n=== {season} Week {week}: {len(out)} unplayed games ===")
     cols = [
@@ -259,11 +270,12 @@ def main(season: int | None = None, week: int | None = None) -> None:
         "home_team",
         "pred_winner",
         "pred_score",
-        "win_prob",
+        "pick_win_prob",
+        "market_win_prob",
+        "cover_prob",
         "market_margin",
         "market_total",
-        "model_edge",
-        "ou_pick",
+        "ats_play",
         "key_drivers",
     ]
     print(out[cols].to_string(index=False))

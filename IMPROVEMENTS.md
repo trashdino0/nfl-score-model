@@ -6,6 +6,49 @@
 
 ---
 
+## 0. Status update — Tier 1 implemented (2026-11-14)
+
+Tier 1 is now in the repository. The original plan below is kept as the
+rationale; this section records what changed and what the fresh numbers say.
+
+**Code changes**
+
+| Area | Change |
+| :--- | :--- |
+| Evaluation | New `src/nflscore/evaluation.py` and `scripts/evaluate.py`: paired bootstrap CIs, McNemar, Diebold–Mariano, Wilson intervals, ATS/over ROI at −110, calibration bins. Writes `outputs/evaluation.md` / `.json`. |
+| Total model | `total_shrink = 0.0`. `ou_pick` and `total_edge` are removed from new outputs. The projected total is the market total; no O/U lean is published. |
+| No-line fallback | `_safe_market` no longer fills a missing spread with the naive baseline. `predict` uses the pure model as the anchor and labels every row `line_source = market` or `pure_fallback`. |
+| Distribution | New `src/nflscore/distribution.py`: joint residual bootstrap from out-of-fold `(margin, total)` errors. Score 10/50/90 quantiles, P(cover), P(push), P(over), margin/total SD. Replaces the fixed ±12.9/11.0 intervals. |
+| Win probability | `margin_sigma_` now comes from out-of-fold error. The market/model log-odds weight is fitted on out-of-fold log loss (2026 fit: 0.43 model weight). The 50/50 blend is gone. |
+| Backtest/live alignment | `weekly_2026` is now **game-day** walk-forward: Thursday's model trains through Wednesday, Sunday's through Saturday, Monday's through Sunday — exactly the live `gameday < first unplayed kickoff` rule. |
+| Metrics | `evaluate` reports ATS/over W–L–P and ROI; `calibration` uses 8 bins with Wilson intervals; correlations are guarded against tiny samples. |
+| Tests | `tests/test_evaluation.py`, `tests/test_distribution.py` (12 tests, all passing). |
+
+**Fresh 2026 Weeks 1–9 walk-forward (136 games, 135 decisive)**
+
+| Model | Winner acc. | Margin MAE | Total MAE | Score MAE | Brier |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Market closing line | 68.9% | 9.49 | 10.60 | 7.26 | 0.215 |
+| Pure stats ridge | 67.4% | 9.73 | 12.07 | 7.78 | 0.213 |
+| Hybrid | 70.4% | 9.49 | 10.60 | 7.25 | 0.215 |
+
+**What the harness says**
+
+- Hybrid − market: margin MAE **+0.004** [−0.113, +0.120]; score MAE **−0.008**
+  [−0.050, +0.033]; Brier **−0.000** [−0.003, +0.002]. No detectable difference.
+- Winner accuracy **+1.48 pp**; McNemar p = 0.50 (2 discordant games).
+- Total MAE is identical by design (`total_shrink = 0`).
+- ATS every lean: 68–62–6 = **52.3%** [43.8, 60.7], ROI **−0.1%** [−16.3, +16.0].
+  ATS plays only (edge ≥ 1): 10–11–1 = 47.6%, ROI −9.1%. Not a strategy.
+- Calibration is reasonable in the middle bins; the 0.25–0.375 bin is the worst
+  (21 games, 33.7% predicted vs 14.3% actual, wide CI).
+
+The original plan's conclusion stands: the residual model has no measurable
+game-level edge. Tier 1 makes that visible instead of hiding it behind a fixed
+interval and an O/U pick.
+
+---
+
 ## 0. TL;DR
 
 1. **The model is well-built, but the residual model has no measurable edge over the closing line.** The hybrid's 2026 winner accuracy is 67.5% vs 65.8% for the market — a two-game difference (McNemar p ≈ 0.5). Paired bootstrap differences in margin/total MAE are centered on zero. The predicted-residual correlation is ~0.03–0.06, and the predicted-residual deciles are non-monotonic.

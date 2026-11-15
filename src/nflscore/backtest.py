@@ -6,26 +6,25 @@ Run with:
 
 from __future__ import annotations
 
-from math import erf, sqrt
-
 import pandas as pd
 
 from .config import OUTPUTS, PROCESSED, TRAIN_START
 from .metrics import calibration, evaluate
-from .model import NFLModel, add_market_baseline
+from .model import NFLModel, add_market_baseline, prob_from_margin
 
 
 def _prob_from_margin(margin: pd.Series, sigma: float = 13.5) -> pd.Series:
     return pd.Series(
-        [0.5 * (1 + erf((m / sigma) / sqrt(2))) for m in margin], index=margin.index
+        prob_from_margin(margin.to_numpy(dtype=float), sigma), index=margin.index
     )
 
 
-def _add_baselines(df: pd.DataFrame) -> pd.DataFrame:
+def _add_baselines(df: pd.DataFrame, model: NFLModel | None = None) -> pd.DataFrame:
     out = add_market_baseline(df)
     out["market_win_prob"] = out["market_home_win_prob"]
     out["naive_win_prob"] = _prob_from_margin(out["naive_margin"])
-    out["pure_win_prob"] = _prob_from_margin(out["pure_margin"])
+    pure_sigma = model.pure_margin_sigma_ if model is not None else 13.5
+    out["pure_win_prob"] = _prob_from_margin(out["pure_margin"], pure_sigma)
     return out
 
 
@@ -45,6 +44,8 @@ SLIM_COLS = [
     "market_margin",
     "market_total",
     "market_home_win_prob",
+    "market_line_missing",
+    "line_source",
     "pred_margin",
     "pred_total",
     "pred_home_score",
@@ -52,8 +53,22 @@ SLIM_COLS = [
     "pred_winner",
     "pred_home_win",
     "win_prob",
+    "win_prob_source",
+    "pick_win_prob",
     "model_win_prob",
     "market_win_prob",
+    "sim_win_prob",
+    "cover_prob",
+    "push_prob",
+    "over_prob",
+    "total_push_prob",
+    "pred_home_score_low",
+    "pred_home_score_med",
+    "pred_home_score_high",
+    "pred_away_score_low",
+    "pred_away_score_med",
+    "pred_away_score_high",
+    "pick_cover_prob",
     "pure_margin",
     "pure_total",
     "pure_home_score",
@@ -63,9 +78,8 @@ SLIM_COLS = [
     "naive_total",
     "naive_win_prob",
     "model_edge",
-    "total_edge",
     "ats_pick",
-    "ou_pick",
+    "ats_play",
     "home_qb_name",
     "away_qb_name",
     "home_qb_change",
@@ -103,7 +117,7 @@ def season_validation(
         train = games[(games.season >= TRAIN_START) & (games.season < season)]
         test = games[games.season == season].copy()
         model = NFLModel().fit(train)
-        pred = _add_baselines(model.predict(test))
+        pred = _add_baselines(model.predict(test), model)
         pred["test_season"] = season
         preds.append(pred)
         rows.append(_summary_row(pred, "market_", f"{season} market"))
@@ -115,20 +129,34 @@ def season_validation(
     return summary, pred_df
 
 
-def weekly_2026(games: pd.DataFrame, weeks=range(1, 9)) -> pd.DataFrame:
-    """Weekly walk-forward: only games before the target week are used."""
+def weekly_2026(
+    games: pd.DataFrame, weeks=range(1, 9), season: int = 2026
+) -> pd.DataFrame:
+    """Game-day walk-forward that mirrors the live prediction path.
+
+    The live job trains on ``gameday < the first unplayed kickoff``, so a
+    Sunday slate already knows the Thursday result.  Grouping by game day (not
+    by week) reproduces that: Thursday's model trains through Wednesday,
+    Sunday's model trains through Saturday, and Monday's through Sunday.
+    """
     preds = []
     for week in weeks:
-        train = games[
-            (games.season >= TRAIN_START)
-            & ((games.season < 2026) | ((games.season == 2026) & (games.week < week)))
-        ]
-        test = games[(games.season == 2026) & (games.week == week)].copy()
-        model = NFLModel().fit(train)
-        pred = _add_baselines(model.predict(test))
-        pred["test_week"] = week
-        pred["train_rows"] = model.train_rows_
-        preds.append(pred)
+        test_week = games[(games.season == season) & (games.week == week)].copy()
+        if test_week.empty:
+            continue
+        for gameday, slate in test_week.groupby("gameday", sort=True):
+            train = games[
+                (games.season >= TRAIN_START) & games.home_score.notna()
+            ].copy()
+            if pd.notna(gameday):
+                train = train[train["gameday"] < gameday]
+            model = NFLModel().fit(train)
+            pred = _add_baselines(model.predict(slate), model)
+            pred["test_week"] = week
+            pred["train_rows"] = model.train_rows_
+            preds.append(pred)
+    if not preds:
+        return pd.DataFrame()
     return pd.concat(preds, ignore_index=True)
 
 
@@ -142,20 +170,28 @@ def run() -> None:
         OUTPUTS / "validation_2021_2025_predictions.csv", index=False
     )
 
-    # ---- 2026 Weeks 1-8 weekly walk-forward ----
-    bt = weekly_2026(games)
-    _slim(bt).to_csv(OUTPUTS / "backtest_2026_weeks1_8.csv", index=False)
-
-    # ---- Summaries ----
-    summary_rows = []
-    for prefix, label in [
-        ("market_", "Market closing line"),
-        ("naive_", "Naive scoring baseline"),
-        ("pure_", "Pure stats ridge"),
-        ("", "Hybrid market+stats"),
-    ]:
-        summary_rows.append(_summary_row(bt, prefix, label))
-    summary = pd.DataFrame(summary_rows)
+    # ---- Current-season weekly walk-forward, every completed week ----
+    season = int(games["season"].max())
+    completed = sorted(
+        int(week)
+        for week, g in games[games.season == season].groupby("week")
+        if len(g) and g["home_score"].notna().all()
+    )
+    bt = weekly_2026(games, weeks=completed, season=season)
+    _slim(bt).to_csv(OUTPUTS / f"backtest_{season}.csv", index=False)
+    early = bt[bt["test_week"] <= 8].copy()
+    _slim(early).to_csv(OUTPUTS / f"backtest_{season}_weeks1_8.csv", index=False)
+    summary = pd.DataFrame(
+        [
+            _summary_row(bt, prefix, label)
+            for prefix, label in [
+                ("market_", "Market closing line"),
+                ("naive_", "Naive scoring baseline"),
+                ("pure_", "Pure stats ridge"),
+                ("", "Hybrid market+stats"),
+            ]
+        ]
+    )
     summary.to_csv(OUTPUTS / "backtest_summary.csv", index=False)
 
     # Per-week table for the three main models.
@@ -174,6 +210,15 @@ def run() -> None:
 
     cal = calibration(bt, "win_prob")
     cal.to_csv(OUTPUTS / "backtest_calibration.csv", index=False)
+    cal_all = pd.concat(
+        [
+            calibration(bt, "win_prob", label="blend"),
+            calibration(bt, "model_win_prob", label="model"),
+            calibration(bt, "market_win_prob", label="market"),
+        ],
+        ignore_index=True,
+    )
+    cal_all.to_csv(OUTPUTS / "backtest_calibration_all.csv", index=False)
 
     # ---- Print ----
     pd.set_option("display.width", 240)
@@ -188,11 +233,11 @@ def run() -> None:
         .round(3)
         .to_string()
     )
-    print("\n=== 2026 Weeks 1-8 pooled ===")
+    print(f"\n=== {season} weekly walk-forward, Weeks {min(completed)}-{max(completed)} pooled ===")
     print(summary.round(3).to_string(index=False))
     print("\n=== 2026 per week ===")
     print(week_table.round(3).to_string(index=False))
-    print("\n=== 2026 calibration ===")
+    print("\n=== 2026 calibration (blend) ===")
     print(cal.round(3).to_string(index=False))
     print(f"\nWrote outputs to {OUTPUTS}")
 

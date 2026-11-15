@@ -59,15 +59,23 @@ def grade_frame(pred: pd.DataFrame, actual: pd.DataFrame) -> tuple[pd.DataFrame,
         default="loss",
     )
 
+    if "ou_diagnostic" in graded.columns:
+        ou_pick = graded["ou_diagnostic"]
+    elif "ou_pick" in graded.columns:
+        ou_pick = graded["ou_pick"]
+    else:
+        ou_pick = pd.Series(np.nan, index=graded.index)
+
     over = graded["total"] > graded["market_total"]
     graded["ou_result"] = np.select(
         [
+            ou_pick.isna(),
             graded["market_total"].isna(),
             graded["total"] == graded["market_total"],
-            (graded["ou_pick"] == "Over") & over,
-            (graded["ou_pick"] == "Under") & (~over),
+            (ou_pick == "Over") & over,
+            (ou_pick == "Under") & (~over),
         ],
-        ["no_line", "push", "win", "win"],
+        ["no_model", "no_line", "push", "win", "win"],
         default="loss",
     )
 
@@ -98,6 +106,22 @@ def grade_frame(pred: pd.DataFrame, actual: pd.DataFrame) -> tuple[pd.DataFrame,
         "ou_p": int(ou.get("push", 0)),
         "ou_rate": _rate(int(ou.get("win", 0)), int(ou.get("loss", 0))),
     }
+
+    decisive = graded["actual_winner"] != "TIE"
+    if "win_prob" in graded.columns:
+        p = graded.loc[decisive, "win_prob"].astype(float)
+        y = (graded.loc[decisive, "actual_winner"] == graded.loc[decisive, "home_team"]).astype(float)
+        summary["brier_win"] = float(((p - y) ** 2).mean()) if len(p) else float("nan")
+    if "cover_prob" in graded.columns:
+        no_push = cover != 0
+        p = graded.loc[no_push, "cover_prob"].astype(float)
+        y = (cover[no_push] > 0).astype(float)
+        summary["brier_cover"] = float(((p - y) ** 2).mean()) if len(p) else float("nan")
+    if "over_prob" in graded.columns:
+        no_push = graded["total"] != graded["market_total"]
+        p = graded.loc[no_push, "over_prob"].astype(float)
+        y = (graded.loc[no_push, "total"] > graded.loc[no_push, "market_total"]).astype(float)
+        summary["brier_over"] = float(((p - y) ** 2).mean()) if len(p) else float("nan")
     return graded, summary
 
 

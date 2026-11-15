@@ -13,20 +13,30 @@ away_score = total / 2 - margin / 2
 
 ## Headline result
 
-2026 Weeks 1–8 walk-forward backtest (121 games, 120 decisive):
+2026 Weeks 1–9 walk-forward backtest (136 games, 135 decisive):
 
 | Model | Winner accuracy | Margin MAE | Total MAE | Score MAE |
 | --- | ---: | ---: | ---: | ---: |
-| Market closing line | 65.8% | 9.57 | 10.66 | 7.33 |
-| Pure stats ridge | 64.2% | 9.85 | 12.10 | 7.86 |
-| **Hybrid market+stats** | **67.5%** | **9.58** | 10.71 | **7.33** |
+| Market closing line | 68.9% | 9.49 | 10.60 | 7.26 |
+| Pure stats ridge | 67.4% | 9.73 | 12.07 | 7.78 |
+| **Hybrid market+stats** | **70.4%** | 9.49 | 10.60 | **7.25** |
 
-The closing market is extremely efficient. The hybrid model edges it on winner
-accuracy in this sample but is essentially tied on margin/score error and does
-not beat the market total. The full write-up is in
-[`outputs/report.md`](outputs/report.md).
+The closing market is extremely efficient. The hybrid model's winner edge is a
+two-game difference (McNemar p ≈ 0.5), and its margin/total/Brier intervals all
+span zero. **It is not a demonstrated betting edge.** The paired evaluation —
+bootstrap intervals, McNemar, Diebold–Mariano, ATS/over ROI at −110, and
+calibration bins — is in [`outputs/evaluation.md`](outputs/evaluation.md).
+[`outputs/report.md`](outputs/report.md) is the earlier narrative study and
+reflects the pre-Tier-1 model.
 
 ## Quick start
+
+Install the dependencies once (the project uses a local venv in this repo):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+```
 
 Data is cached under `data/raw/`. To rebuild everything from cached nflverse
 files:
@@ -42,11 +52,19 @@ Or run the stages individually:
 $env:PYTHONPATH="src"
 python -m nflscore.build       # team-game table from play-by-play
 python -m nflscore.features    # leakage-safe weekly state + game features
-python -m nflscore.backtest    # 2021-2025 validation + 2026 Weeks 1-8 replay
+python -m nflscore.backtest    # 2021-2025 validation + current-season replay
+python scripts/evaluate.py     # paired CIs, McNemar, DM, ATS ROI, calibration
 python -m nflscore.predict     # next unplayed week (CSV)
 python -m nflscore.weekly      # next unplayed week (CSV + markdown card)
 python -m nflscore.grade --week 9   # grade saved picks after finals
-python -m nflscore.report      # outputs/report.md (fixed Weeks 1-8 study)
+python -m nflscore.report      # legacy fixed study (pre-Tier-1 model)
+```
+
+Run the evaluation/unit tests:
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest tests -q
 ```
 
 ## One-click scripts (Windows)
@@ -120,31 +138,45 @@ python scripts/download_all.py --refresh --season 2026
 
 ## Outputs
 
-- `outputs/report.md` — the fixed methodology/validation/backtest study
-  (2021–2025 validation plus 2026 Weeks 1–8), not regenerated each week.
-- `outputs/weekXX_card.md` — the weekly card: picks, projected scores, win
-  probabilities, 80% score ranges, market leans, and availability notes.
+- `outputs/evaluation.md` / `outputs/evaluation.json` — the current paired
+  evaluation: bootstrap CIs, McNemar, Diebold–Mariano, ATS/over ROI, and
+  calibration for the blend, model, and market probabilities.
+- `outputs/report.md` — the earlier fixed methodology/validation/backtest
+  narrative. It describes the pre-Tier-1 model; use `evaluation.md` for current
+  numbers.
+- `outputs/weekXX_card.md` — the weekly card: picks, projected scores, model
+  and market win probabilities, bootstrap score ranges, cover probabilities,
+  and availability notes.
 - `outputs/weekXX_predictions.csv` — the same slate in machine-readable form,
-  with pure-stats projections and feature drivers.
+  with pure-stats projections, `line_source`, and feature drivers.
 - `outputs/weekXX_graded.csv` — post-week grading, created by
   `python -m nflscore.grade --week N`.
-- `outputs/backtest_2026_weeks1_8.csv` — per-game 2026 backtest predictions.
+- `outputs/backtest_2026.csv` — per-game current-season backtest predictions.
+- `outputs/backtest_2026_weeks1_8.csv` — the original Weeks 1–8 slice, kept for
+  comparability.
 - `outputs/backtest_summary.csv` — pooled metrics by model.
 - `outputs/backtest_per_week.csv` — week-by-week accuracy/error.
-- `outputs/backtest_calibration.csv` — win-probability calibration.
+- `outputs/backtest_calibration.csv` — blend calibration bins.
+- `outputs/backtest_calibration_all.csv` — blend/model/market calibration.
 - `outputs/validation_2021_2025_summary.csv` — season-level validation.
 
 ## Model in one paragraph
 
 The primary model is a **market-anchored residual ridge**. It predicts
 `actual_margin - closing_margin` and `actual_total - closing_total`, then shrinks
-those residuals (20% for margin, 10% for total) before adding them back to the
-closing line. A pure stats ridge predicts margin and total directly as a
-comparison. Win probability comes from a normal approximation to the predicted
-margin (`σ ≈ 12.7`), blended 50/50 with the no-vig market probability. Feature
-families include EPA/pass/rush splits, success rate, pace, points/drive,
-red-zone efficiency, QB availability and quality, WR1/RB1/pass-rush matchups,
-injuries, rest/weather, Elo, and the closing line.
+those residuals (20% for margin, **0% for total**) before adding them back to the
+closing line. The total shrink is zero because the total model has not beaten the
+closing total out of sample; the projected total is the market total, and no
+over/under pick is published. A pure stats ridge predicts margin and total
+directly as a comparison and as the fallback when no line is posted. Win
+probability comes from a normal approximation using the **out-of-fold** error
+scale, blended with the no-vig market in log-odds space at a weight fitted on
+out-of-fold log loss. Score ranges and cover/over probabilities come from a
+**joint residual bootstrap** that resamples `(margin, total)` error pairs from
+out-of-fold predictions, so the distribution is coherent and conditional on the
+game. Feature families include EPA/pass/rush splits, success rate, pace,
+points/drive, red-zone efficiency, QB availability and quality, WR1/RB1/pass-rush
+matchups, injuries, rest/weather, Elo, and the closing line.
 
 ## Notes
 

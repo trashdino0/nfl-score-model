@@ -76,6 +76,34 @@ def _context_text(row) -> str:
     return text
 
 
+def _pick_prob(row, col: str) -> float:
+    """Probability for the model's pick side, from a home-perspective column."""
+    value = getattr(row, col)
+    if pd.isna(value):
+        return float("nan")
+    return value if row.pred_winner == row.home_team else 1 - value
+
+
+def _backtest_note() -> str:
+    """Current backtest headline, read from the last run rather than hardcoded."""
+    path = OUTPUTS / "backtest_summary.csv"
+    if not path.exists():
+        return "No backtest summary has been generated yet."
+    summary = pd.read_csv(path).set_index("model")
+    try:
+        hybrid = summary.loc["Hybrid market+stats"]
+        market = summary.loc["Market closing line"]
+    except KeyError:
+        return ""
+    return (
+        f"**Backtest ({int(hybrid['n'])} games):** the hybrid model picks "
+        f"{hybrid['win_acc']:.1%} of decisive winners vs {market['win_acc']:.1%} for the "
+        f"closing line; margin MAE {hybrid['margin_mae']:.2f} vs "
+        f"{market['margin_mae']:.2f}. A gap this small is within sampling noise, not a "
+        f"proven edge."
+    )
+
+
 def _table(headers: list[str], rows: list[list[str]], align: list[str]) -> str:
     sep = {
         "l": ":---",
@@ -128,16 +156,13 @@ def render_card(
     lines += [
         (
             f"The model agrees with the market favorite in **{agree} of {n_line}** games "
-            f"with a posted line ({home_favs} home favorites). Win probabilities are "
-            "blended 50/50 with the no-vig market when a line is posted, so they are "
-            "deliberately close to the line."
+            f"with a posted line ({home_favs} home favorites). Win probabilities are the "
+            "model's estimate; the market's no-vig probability is shown beside it for "
+            "comparison. The CSV's `win_prob` is a log-odds blend whose market/model "
+            "weight is fitted on out-of-fold data."
         ),
         "",
-        (
-            "**Backtest through Week 8:** 2026 walk-forward — 67.5% winner accuracy "
-            "(81/120 decisive games) vs 65.8% for the closing line; margin MAE 9.58 "
-            "vs 9.57. The difference is within noise, not a proven edge."
-        ),
+        _backtest_note(),
         "",
         "## The card",
         "",
@@ -145,18 +170,21 @@ def render_card(
             [
                 "Game",
                 "Pick",
-                "Win prob",
+                "Model win %",
+                "Market win %",
                 "Projected score (away–home)",
                 "Pick's 80% score range",
                 "Line",
-                "ATS lean",
-                "O/U lean",
+                "Pick cover %",
             ],
             [
                 [
                     f"{_day(r.gameday)} · {r.away_team} @ {r.home_team}",
                     f"**{r.pred_winner}**",
-                    f"{r.pick_win_prob:.0%}",
+                    f"{_pick_prob(r, 'model_win_prob'):.0%}",
+                    "—"
+                    if pd.isna(r.market_win_prob)
+                    else f"{_pick_prob(r, 'market_win_prob'):.0%}",
                     f"{r.away_team} {int(round(r.pred_away_score))}–"
                     f"{int(round(r.pred_home_score))} {r.home_team}",
                     _range_for(r, r.pred_winner),
@@ -164,23 +192,23 @@ def render_card(
                     if r.market_line_missing
                     else _game_line(r.market_margin, r.home_team, r.away_team),
                     "—"
-                    if r.market_line_missing
-                    else _spread(r.market_margin, r.ats_pick, r.home_team),
-                    "—" if r.market_line_missing else f"{r.ou_pick} {r.market_total:g}",
+                    if pd.isna(r.pick_cover_prob)
+                    else f"{r.pick_cover_prob:.0%}",
                 ]
                 for r in pred.itertuples()
             ],
-            ["l", "l", "r", "l", "c", "l", "l", "l"],
+            ["l", "l", "r", "r", "l", "c", "l", "r"],
         ),
         "",
-        "ATS leans are against the spread, not the moneyline: a team can be the "
-        "pick to win and still not cover. O/U leans compare the model total to the "
-        "market total.",
+        "Cover probabilities come from a joint residual bootstrap (margin and total "
+        "errors resampled together), so they are consistent with the projected score. "
+        "The model does not publish over/under leans: its total model has not beaten the "
+        "closing total out of sample, so the projected total is the market total.",
         "",
         "## Confidence tiers",
         "",
         _table(
-            ["Tier", "Pick win prob", "Picks"],
+            ["Tier", "Model win prob", "Picks"],
             [
                 [
                     tier,
@@ -216,7 +244,7 @@ def render_card(
     else:
         lines += [
             _table(
-                ["Game", "Edge vs line", "Value side", "Line"],
+                ["Game", "Edge vs line", "Value side", "Line", "Play?"],
                 [
                     [
                         f"{r.away_team} @ {r.home_team}",
@@ -227,15 +255,17 @@ def render_card(
                             r.home_team if r.model_edge > 0 else r.away_team,
                             r.home_team,
                         ),
+                        "yes" if pd.notna(r.ats_play) else "lean only",
                     ]
                     for r in edge.itertuples()
                 ],
-                ["l", "r", "l", "l"],
+                ["l", "r", "l", "l", "l"],
             ),
             "",
             "The value side is where the model is higher than the market, in points. "
             "It is not always the same as the pick: the model can project a team to win "
-            "without covering. Edges under a point are noise, not an invitation to bet.",
+            "without covering. A side is labelled a play only when the edge is at least "
+            "1 point; smaller edges are noise. There is no demonstrated betting edge.",
             "",
         ]
 
@@ -248,15 +278,19 @@ def render_card(
         "",
         "## How to read this card",
         "",
-        "- **Pick** is the team with the higher projected score. **Win prob** is the "
-        "chance that pick wins, blended 50/50 between the model and the no-vig market "
-        "when a line is posted.",
-        "- **Projected score** is a continuous estimate, not a final-score promise. "
-        "The 80% range comes from 2021–2025 walk-forward residuals; the median "
-        "team-score miss in the 2026 backtest was about 6 points.",
-        "- **Line / ATS / O-U** use the market snapshot in the data. The model does "
-        "not have a proven betting edge: 2026 Weeks 1–8 went 51.3% ATS and 42.1% "
-        "on totals. Treat leans as diagnostics, not recommendations.",
+        "- **Pick** is the team with the higher projected score. **Model win %** is the "
+        "probability the model assigns to that pick; **market win %** is the no-vig "
+        "implied probability for the same side. When they disagree, the market is the "
+        "better-calibrated number.",
+        "- **Projected score** is a continuous estimate, not a final-score promise. The "
+        "80% range is this game's 10th–90th percentile from the joint residual "
+        "bootstrap; exact NFL scores are inherently noisy.",
+        "- **Line / cover %** use the market snapshot in the data. A cover probability "
+        "above 50% is the model's lean against the spread, not a recommendation. Only "
+        "edges ≥ 1 point are labelled plays, and the backtest has not shown a "
+        "profitable ATS strategy.",
+        "- **No over/under lean is published.** The total model did not beat the closing "
+        "total out of sample, so the projected total is the market total.",
         "- **Availability** reflects the injury report and depth chart at build time. "
         "Late scratches and line movement are not captured; rebuild if either changes.",
         "",

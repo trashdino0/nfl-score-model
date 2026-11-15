@@ -167,6 +167,13 @@ def build_report() -> str:
 
     n_games = len(bt)
     n_decisive = int(bt["home_win"].notna().sum())
+    decisive = bt["home_win"].notna()
+    hybrid_wins = int(
+        (((bt.loc[decisive, "pred_margin"] > 0).astype(float)) == bt.loc[decisive, "home_win"]).sum()
+    )
+    market_wins = int(
+        (((bt.loc[decisive, "market_margin"] > 0).astype(float)) == bt.loc[decisive, "home_win"]).sum()
+    )
 
     # Validation averages
     val = val.copy()
@@ -349,6 +356,12 @@ def build_report() -> str:
 
     report = f"""# NFL Score Model — 2026 Backtest and Week 9 Forecast
 
+> **Legacy report (pre-Tier-1).** This document describes the model before the
+> Tier 1 evaluation, fallback, and distribution changes. For current numbers,
+> see `outputs/evaluation.md`. The model now sets `total_shrink = 0`, labels
+> no-line games as `pure_fallback`, and uses a joint residual bootstrap instead
+> of fixed score intervals.
+
 *Generated 2026-11-06. All predictions are model estimates, not betting advice.*
 
 ## 1. Executive summary
@@ -368,16 +381,12 @@ adjustment heavily toward zero.
 **2026 Weeks 1–8 backtest ({n_games} games, {n_decisive} decisive):**
 
 - **Hybrid model: {pct(s.loc["Hybrid market+stats", "win_acc"])} winner accuracy**
-  ({round(s.loc["Hybrid market+stats", "win_acc"] * n_decisive)}/{
-        n_decisive
-    }), margin MAE
+  ({hybrid_wins}/{n_decisive}), margin MAE
   {num(s.loc["Hybrid market+stats", "margin_mae"])}, total MAE
   {num(s.loc["Hybrid market+stats", "total_mae"])}, score MAE
   {num(s.loc["Hybrid market+stats", "score_mae"])}.
 - **Market closing line: {pct(s.loc["Market closing line", "win_acc"])}**
-  ({round(s.loc["Market closing line", "win_acc"] * n_decisive)}/{
-        n_decisive
-    }), margin MAE
+  ({market_wins}/{n_decisive}), margin MAE
   {num(s.loc["Market closing line", "margin_mae"])}, total MAE
   {num(s.loc["Market closing line", "total_mae"])}, score MAE
   {num(s.loc["Market closing line", "score_mae"])}.
