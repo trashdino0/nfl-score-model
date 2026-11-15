@@ -48,9 +48,33 @@ The original plan's conclusion stands: the residual model has no measurable
 game-level edge. Tier 1 makes that visible instead of hiding it behind a fixed
 interval and an O/U pick.
 
+**What actually changed, on identical games** (`outputs/version_delta.md`,
+base `d39c571`, 136 games aligned by `game_id`, identical training windows):
+
+| Metric | Before | After | Δ | 95% CI | Verdict |
+| :--- | ---: | ---: | ---: | ---: | :--- |
+| Margin MAE | 9.489 | 9.489 | +0.000 | [0, 0] | unchanged |
+| Total MAE | 10.654 | 10.596 | −0.058 | [−0.129, +0.012] | no detectable change |
+| Score MAE | 7.260 | 7.253 | −0.007 | [−0.032, +0.018] | no detectable change |
+| Winner accuracy | 70.4% | 70.4% | +0.00 pp | — | no detectable change |
+| Brier | 0.2148 | 0.2149 | +0.0001 | [−0.001, +0.001] | no detectable change |
+| 80% interval coverage | 87.5% | 86.8% | −0.74 pp | — | closer to nominal 80% |
+| O/U win rate | 40.4% | 48.5% | +8.1 pp | — | old lean was actively bad |
+
+This is the right way to read Tier 1: **it is a measurement release, not a
+prediction release.** Margin predictions are byte-identical, the total moved
+0.32 points on average toward the market, and no predictive metric changed
+beyond noise. What changed is that the project can now tell the difference
+between a real improvement and a rounding artefact — which it previously could
+not. The O/U line is the clearest example: the old lean won 40.4% of the time
+and was published anyway.
+
+Going forward, `scripts/version_delta.py --base <ref>` produces this table for
+every change, and `outputs/version_history.csv` accumulates the record.
+
 ---
 
-## 0. TL;DR
+## TL;DR of the original plan (pre-Tier-1)
 
 1. **The model is well-built, but the residual model has no measurable edge over the closing line.** The hybrid's 2026 winner accuracy is 67.5% vs 65.8% for the market — a two-game difference (McNemar p ≈ 0.5). Paired bootstrap differences in margin/total MAE are centered on zero. The predicted-residual correlation is ~0.03–0.06, and the predicted-residual deciles are non-monotonic.
 

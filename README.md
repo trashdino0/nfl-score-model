@@ -29,6 +29,27 @@ calibration bins — is in [`outputs/evaluation.md`](outputs/evaluation.md).
 [`outputs/report.md`](outputs/report.md) is the earlier narrative study and
 reflects the pre-Tier-1 model.
 
+For the method — features, estimator, cross-validation, and the diagnostics
+behind every design choice — read [`MODEL.md`](MODEL.md).
+
+## Version deltas
+
+Every change is measured against the previous tag on **identical games**. The
+harness checks out the old commit into a temporary worktree, runs that code on
+the current walk-forward windows, and reports paired deltas:
+
+```powershell
+$env:PYTHONPATH="src"; python scripts/version_delta.py --base <git-ref>
+```
+
+- [`outputs/version_delta.md`](outputs/version_delta.md) — the latest before/after
+- `outputs/version_history.csv` — one row per metric per comparison, appended
+
+Training windows are matched on both sides, so the delta isolates model changes
+from harness changes. See §1 of `version_delta.md` for what a delta does *not*
+prove.
+
+
 ## Quick start
 
 Install the dependencies once (the project uses a local venv in this repo):
